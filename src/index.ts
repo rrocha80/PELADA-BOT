@@ -1,0 +1,468 @@
+import qrcode from 'qrcode-terminal';
+import db from './database.js';
+import pino from 'pino';
+
+let makeWASocket: any;
+let useMultiFileAuthState: any;
+let DisconnectReason: any;
+
+const logger = pino({ level: process.env.DEBUG ? 'debug' : 'info' });
+
+// novo: controla fluxo de pedir nome do convidado por grupo
+// agora guarda remoteJid -> inviterJid (quem pediu), para só aceitar resposta desse usuário
+const pendingConvidado = new Map<string, string>(); // remoteJid -> inviterJid
+// novo: controla pedidos de apagar listas (remoteJid -> { type, requester })
+const pendingDelete = new Map<string, { type: 'convidados' | 'mensalistas'; requester: string }>(); 
+// novo: controla pedido de apagar um convidado específico (remoteJid -> { requesterJid, requesterName })
+const pendingDeleteSingle = new Map<string, { requesterJid: string; requesterName: string }>(); 
+// novo: controla pedido de apagar um mensalista específico (remoteJid -> { requesterJid, requesterName })
+const pendingDeleteSingleMensalista = new Map<string, { requesterJid: string; requesterName: string }>();
+// novo: controla quem pode confirmar após pedir "pelada"
+const pendingPelada = new Map<string, Set<string>>(); // remoteJid -> set(senderJid)
+
+function allowPeladaConfirmation(remoteJid: string, senderJid: string, ttlMs = 2 * 60 * 1000) {
+  let set = pendingPelada.get(remoteJid);
+  if (!set) {
+    set = new Set<string>();
+    pendingPelada.set(remoteJid, set);
+  }
+  set.add(senderJid);
+  setTimeout(() => {
+    set!.delete(senderJid);
+    if (set!.size === 0) pendingPelada.delete(remoteJid);
+  }, ttlMs);
+}
+
+async function conectarBot(): Promise<void> {
+  const { state, saveCreds } = await useMultiFileAuthState('auth');
+
+  const sock = makeWASocket({
+    auth: state as any,
+    logger
+  });
+
+  sock.ev.on('creds.update', saveCreds);
+
+  // substitua o handler atual por este (mais verboso e com reconexão)
+  sock.ev.on('connection.update', (update: any) => {
+    const { connection, lastDisconnect, qr } = update;
+    if (qr) {
+      // mostra ASCII no terminal
+      qrcode.generate(qr, { small: true });
+      // imprime url/base64 caso prefira abrir no navegador
+      console.log('QR (url):', qr);
+      logger.info('QR generated');
+    }
+    logger.info({ connection, lastDisconnect }, 'connection.update');
+
+    if (connection === 'open') {
+      logger.info('Bot conectado com sucesso!');
+    }
+
+    if (connection === 'close') {
+      const err = lastDisconnect?.error;
+      logger.warn({ err }, 'connection closed');
+
+      const isLoggedOut = err?.output?.statusCode === DisconnectReason?.loggedOut;
+      if (!isLoggedOut) {
+        logger.info('Tentando reconectar em 3s...');
+        setTimeout(() => conectarBot().catch(e => logger.error({ e }, 'reconnect failed')), 3000);
+      } else {
+        logger.info('Sessão foi desconectada (logged out). Apague auth/ e reautentique.');
+      }
+    }
+  });
+
+  sock.ev.on('messages.upsert', async ({ messages }: any) => {
+    const msg: any = messages?.[0];
+    if (!msg?.message) return;
+
+    const remoteJid: string = msg.key.remoteJid;
+    if (!remoteJid || !remoteJid.includes('@g.us')) return;
+
+    const senderJid: string = msg.key.participant || msg.key.remoteJid; // quem enviou a mensagem
+    const rawText: string = (
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text ||
+      ''
+    ).trim();
+
+    const texto: string = rawText.toLowerCase();
+    const participante: string = msg.pushName || 'Sem Nome';
+
+    // início do fluxo: registra quem pediu (inviterJid) no map
+    if (texto === 'convidado' || texto === 'convidade') {
+      pendingConvidado.set(remoteJid, senderJid);
+      await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado:' });
+      return;
+    }
+
+    // resposta ao pedido de convidado: só aceita se quem respondeu for quem pediu
+    const inviterJid = pendingConvidado.get(remoteJid);
+    if (inviterJid && inviterJid === senderJid) {
+      // esta mensagem é o nome do convidado enviada pelo próprio quem pediu
+      pendingConvidado.delete(remoteJid);
+
+      const nomeConvidado = rawText.trim();
+      if (!nomeConvidado) {
+        // solicita novamente se vazio
+        pendingConvidado.set(remoteJid, inviterJid);
+        await sock.sendMessage(remoteJid, { text: 'Nome inválido. Digite o nome do convidado:' });
+        return;
+      }
+
+      // verifica se já existe convidado com esse nome (case-insensitive)
+      db.get(
+        `SELECT 1 FROM convidados WHERE nome = ? COLLATE NOCASE`,
+        [nomeConvidado],
+        async (err: any, row: any) => {
+          if (err) {
+            await sock.sendMessage(remoteJid, { text: 'Erro ao verificar convidado.' });
+            return;
+          }
+          if (row) {
+            await sock.sendMessage(remoteJid, { text: `Convidado "${nomeConvidado}" já está na lista.` });
+            return;
+          }
+
+          // não existe -> adiciona
+          adicionarConvidado(nomeConvidado, participante, async (err2?: any) => {
+            if (err2) {
+              await sock.sendMessage(remoteJid, { text: 'Erro ao adicionar convidado.' });
+              return;
+            }
+            const lista = await obterLista();
+            await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+          });
+        }
+      );
+
+      return;
+    }
+    // se existir pending mas quem respondeu não é o convidador, ignore o pending e prossiga normalmente
+
+    if (texto === 'pelada') {
+      await sock.sendMessage(remoteJid, {
+        text:
+`⚽ Confirme participação na pelada do dia ${DATA_PELADA}
+
+Digite:
+SIM
+ou
+NÃO`
+      });
+      return;
+    }
+
+    if (['sim','s','bora','dentro'].includes(texto)) {
+      adicionarParticipante(participante, async () => {
+        const lista = await obterLista();
+        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+      });
+    }
+
+    if (['nao','não','n','fora'].includes(texto)) {
+      removerParticipante(participante, async () => {
+        const lista = await obterLista();
+        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+      });
+    }
+
+    // fluxo de confirmação por senha para apagar listas
+    const pending = pendingDelete.get(remoteJid);
+    if (pending && pending.requester === senderJid) {
+      // trata a mensagem atual como senha
+      pendingDelete.delete(remoteJid);
+
+      const senha = rawText.trim();
+      if (!senha) {
+        pendingDelete.set(remoteJid, pending);
+        await sock.sendMessage(remoteJid, { text: 'Senha vazia. Digite a senha:' });
+        return;
+      }
+
+      // envia apenas asteriscos para não expor a senha no grupo
+      await sock.sendMessage(remoteJid, { text: '*'.repeat(senha.length) });
+
+      if (senha === 'marrada') {
+        if (pending.type === 'convidados') {
+          apagarConvidados(async (err?: any) => {
+            if (err) {
+              await sock.sendMessage(remoteJid, { text: 'Erro ao apagar convidados.' });
+              return;
+            }
+            const lista = await obterLista();
+            await sock.sendMessage(remoteJid, { text: 'Lista de convidados apagada.' });
+            await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+          });
+        } else {
+          apagarMensalistas(async (err?: any) => {
+            if (err) {
+              await sock.sendMessage(remoteJid, { text: 'Erro ao apagar mensalistas.' });
+              return;
+            }
+            const lista = await obterLista();
+            await sock.sendMessage(remoteJid, { text: 'Lista de mensalistas apagada.' });
+            await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+          });
+        }
+      } else {
+        await sock.sendMessage(remoteJid, { text: 'Senha incorreta.' });
+      }
+      return;
+    }
+
+    // iniciar fluxo de apagar listas: pede senha
+    if (texto === 'apagar convidados') {
+      pendingDelete.set(remoteJid, { type: 'convidados', requester: senderJid });
+      await sock.sendMessage(remoteJid, { text: 'Digite a senha:' });
+      return;
+    }
+
+    if (texto === 'apagar mensalistas') {
+      pendingDelete.set(remoteJid, { type: 'mensalistas', requester: senderJid });
+      await sock.sendMessage(remoteJid, { text: 'Digite a senha:' });
+      return;
+    }
+
+    // iniciar fluxo para apagar um convidado específico
+    if (texto === 'apagar convidado') {
+      pendingDeleteSingle.set(remoteJid, { requesterJid: senderJid, requesterName: participante });
+      await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado a apagar:' });
+      return;
+    }
+
+    // resposta ao pedido de apagar convidado: só aceita se quem respondeu for quem pediu
+    const pendingSingle = pendingDeleteSingle.get(remoteJid);
+    if (pendingSingle && pendingSingle.requesterJid === senderJid) {
+      pendingDeleteSingle.delete(remoteJid);
+
+      const nomeToDelete = rawText.trim();
+      if (!nomeToDelete) {
+        // solicita novamente se vazio
+        pendingDeleteSingle.set(remoteJid, pendingSingle);
+        await sock.sendMessage(remoteJid, { text: 'Nome inválido. Digite o nome do convidado a apagar:' });
+        return;
+      }
+
+      // verifica existência e quem convidou
+      db.get(
+        `SELECT convidado_por FROM convidados WHERE nome = ?`,
+        [nomeToDelete],
+        async (err: any, row: any) => {
+          if (err) {
+            await sock.sendMessage(remoteJid, { text: 'Erro ao verificar convidado.' });
+            return;
+          }
+          if (!row) {
+            await sock.sendMessage(remoteJid, { text: 'Convidado não encontrado.' });
+            return;
+          }
+          if (row.convidado_por !== pendingSingle.requesterName) {
+            await sock.sendMessage(remoteJid, { text: 'Você não é o convidador deste convidado.' });
+            return;
+          }
+
+          // apaga apenas o convidado com esse nome e convidador
+          db.run(
+            `DELETE FROM convidados WHERE nome = ? AND convidado_por = ?`,
+            [nomeToDelete, pendingSingle.requesterName],
+            async (err2: any) => {
+              if (err2) {
+                await sock.sendMessage(remoteJid, { text: 'Erro ao apagar convidado.' });
+                return;
+              }
+              const lista = await obterLista();
+              await sock.sendMessage(remoteJid, { text: `Convidado ${nomeToDelete} apagado.` });
+              await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+            }
+          );
+        }
+      );
+
+      return;
+    }
+
+    // iniciar fluxo para apagar um mensalista específico
+    if (texto === 'apagar mensalista') {
+      pendingDeleteSingleMensalista.set(remoteJid, { requesterJid: senderJid, requesterName: participante });
+      await sock.sendMessage(remoteJid, { text: 'Digite o nome do mensalista a apagar:' });
+      return;
+    }
+
+    // resposta ao pedido de apagar mensalista: só aceita se quem respondeu for quem pediu
+    const pendingMens = pendingDeleteSingleMensalista.get(remoteJid);
+    if (pendingMens && pendingMens.requesterJid === senderJid) {
+      pendingDeleteSingleMensalista.delete(remoteJid);
+
+      const nomeToDelete = rawText.trim();
+      if (!nomeToDelete) {
+        // solicita novamente se vazio
+        pendingDeleteSingleMensalista.set(remoteJid, pendingMens);
+        await sock.sendMessage(remoteJid, { text: 'Nome inválido. Digite o nome do mensalista a apagar:' });
+        return;
+      }
+
+      // verifica existência (case-insensitive)
+      db.get(
+        `SELECT 1 FROM participantes WHERE nome = ? COLLATE NOCASE`,
+        [nomeToDelete],
+        async (err: any, row: any) => {
+          if (err) {
+            await sock.sendMessage(remoteJid, { text: 'Erro ao verificar mensalista.' });
+            return;
+          }
+          if (!row) {
+            await sock.sendMessage(remoteJid, { text: 'Mensalista não encontrado.' });
+            return;
+          }
+
+          // apaga o mensalista
+          db.run(
+            `DELETE FROM participantes WHERE nome = ? COLLATE NOCASE`,
+            [nomeToDelete],
+            async (err2: any) => {
+              if (err2) {
+                await sock.sendMessage(remoteJid, { text: 'Erro ao apagar mensalista.' });
+                return;
+              }
+              const lista = await obterLista();
+              await sock.sendMessage(remoteJid, { text: `Mensalista ${nomeToDelete} apagado.` });
+              await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+            }
+          );
+        }
+      );
+
+      return;
+    }
+  });
+}
+
+// novas funções para convidados
+function adicionarConvidado(nome: string, convidadoPor: string, callback: (err?: any) => void) {
+  db.run(
+    `INSERT INTO convidados(nome, convidado_por) VALUES(?, ?)`,
+    [nome, convidadoPor],
+    callback
+  );
+}
+
+function removerConvidado(nome: string, callback: (err?: any) => void) {
+  db.run(
+    `DELETE FROM convidados WHERE nome = ?`,
+    [nome],
+    callback
+  );
+}
+
+// <<< inserir as funções abaixo para participantes >>>
+function adicionarParticipante(nome: string, callback: (err?: any) => void) {
+  db.run(
+    `INSERT OR IGNORE INTO participantes(nome) VALUES(?)`,
+    [nome],
+    callback
+  );
+}
+
+function removerParticipante(nome: string, callback: (err?: any) => void) {
+  db.run(
+    `DELETE FROM participantes WHERE nome = ?`,
+    [nome],
+    callback
+  );
+}
+// <<< fim inserção >>>
+
+// novas funções para apagar listas
+function apagarConvidados(callback: (err?: any) => void) {
+  db.run(
+    `DELETE FROM convidados`,
+    [],
+    callback
+  );
+}
+
+function apagarMensalistas(callback: (err?: any) => void) {
+  db.run(
+    `DELETE FROM participantes`,
+    [],
+    callback
+  );
+}
+
+// atualizar obterLista para retornar ambas as listas
+function obterLista(): Promise<{ participantes: { nome: string }[]; convidados: { nome: string; convidado_por: string }[] }> {
+  return new Promise(async (resolve, reject) => {
+    try {
+      db.all(`SELECT nome FROM participantes ORDER BY id`, [], (err: any, rows1: any) => {
+        if (err) return reject(err);
+        db.all(`SELECT nome, convidado_por FROM convidados ORDER BY id`, [], (err2: any, rows2: any) => {
+          if (err2) return reject(err2);
+          resolve({ participantes: rows1 || [], convidados: rows2 || [] });
+        });
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+// formata com Mensalistas e Convidados (ex.: José (Rodrigo))
+function formatarLista(data: { participantes: { nome: string }[]; convidados: { nome: string; convidado_por: string }[] }): string {
+  const { participantes, convidados } = data;
+  let texto = `⚽ Lista da Pelada - ${DATA_PELADA}\n\n`;
+
+  texto += 'Mensalistas\n';
+  if (!participantes || participantes.length === 0) {
+    texto += 'Nenhum participante confirmado.\n\n';
+  } else {
+    participantes.forEach((p, i) => {
+      texto += `${i + 1}- ${p.nome}\n`;
+    });
+    texto += '\n';
+  }
+
+  texto += 'Convidados\n';
+  if (!convidados || convidados.length === 0) {
+    texto += 'Nenhum convidado.\n';
+  } else {
+    convidados.forEach((c, i) => {
+      texto += `${i + 1}- ${c.nome} (${c.convidado_por})\n`;
+    });
+  }
+
+  return texto.trim();
+}
+
+function pad(n: number) { return n.toString().padStart(2, '0'); }
+
+function getNextFriday(): string {
+  const today = new Date();
+  const day = today.getDay(); // 0=Sun ... 5=Fri, 6=Sat
+  const target = 5; // Friday
+  let diff = (target - day + 7) % 7;
+  // garante que seja sempre no futuro (próxima sexta)
+  if (diff === 0) diff = 7;
+  const next = new Date(today);
+  next.setDate(today.getDate() + diff);
+  const d = pad(next.getDate());
+  const m = pad(next.getMonth() + 1);
+  const y = next.getFullYear();
+  return `${d}/${m}/${y}`;
+}
+
+const DATA_PELADA = getNextFriday();
+
+// import dinâmico para pacotes ESM
+(async () => {
+  try {
+    const baileys = await import('@whiskeysockets/baileys');
+    ({ default: makeWASocket, useMultiFileAuthState, DisconnectReason } = baileys as any);
+    await conectarBot();
+    console.log('Bot iniciado');
+  } catch (err) {
+    console.error('Erro ao iniciar o bot:', err);
+    process.exit(1);
+  }
+})();
