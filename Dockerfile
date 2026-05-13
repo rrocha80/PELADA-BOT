@@ -14,17 +14,19 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# copiar package.json antes para usar cache
 COPY package*.json ./
 
-# build-from-source apenas para sqlite3
-ENV npm_config_sqlite3_build_from_source=true
+# força build-from-source (garante binário compatível com a libc do container)
+ENV npm_config_build_from_source=true
 
-# não instalar optional deps (previne tentativa de build do sharp se for optional)
+# instalar dependências (sem opcionais)
 RUN npm ci --no-optional
 
-# copiar código e compilar
+# garantir rebuild do sqlite3 se por algum motivo ficou pré-compilado
+RUN npm rebuild sqlite3 --build-from-source || true
+
 COPY . .
+
 RUN npm run build
 RUN npm prune --production
 
