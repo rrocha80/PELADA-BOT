@@ -9,8 +9,17 @@ RUN apt-get update && \
       g++ \
       pkg-config \
       ca-certificates \
+      curl \
+      git \
       libsqlite3-dev \
       libvips-dev \
+      libvips-tools \
+      libglib2.0-dev \
+      libexpat1-dev \
+      libxml2-dev \
+      libjpeg-dev \
+      libpng-dev \
+      libwebp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -18,7 +27,7 @@ WORKDIR /app
 # copiar package.json (e lock) antes para aproveitar cache
 COPY package*.json ./
 
-# forçar build-from-source para módulos nativos que precisam (garante binário compatível com a libc do container)
+# forçar build-from-source para módulos nativos (garante binário compatível com a libc do container)
 ENV npm_config_build_from_source=true
 
 # instalar dependências (vai compilar o que for necessário)
