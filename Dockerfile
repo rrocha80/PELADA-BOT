@@ -1,6 +1,5 @@
 FROM node:20
 
-# instalar deps do sistema necessárias para compilar módulos nativos (sqlite3, sharp, etc.)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       python3 \
@@ -12,11 +11,6 @@ RUN apt-get update && \
       curl \
       git \
       libsqlite3-dev \
-      libvips-dev \
-      libvips-tools \
-      libglib2.0-dev \
-      libexpat1-dev \
-      libxml2-dev \
       libjpeg-dev \
       libpng-dev \
       libwebp-dev \
@@ -24,28 +18,23 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# copiar package.json (e lock) antes para aproveitar cache
 COPY package*.json ./
 
-# forçar build-from-source para módulos nativos (garante binário compatível com a libc do container)
-ENV npm_config_build_from_source=true
+# build-from-source apenas para sqlite3 (evita compilar sharp/libvips)
+ENV npm_config_sqlite3_build_from_source=true
 
-# instalar dependências (vai compilar o que for necessário)
+# permite que sharp baixe binários pré-compilados (não build-from-source)
+# (não exportar npm_config_build_from_source)
+
 RUN npm ci
 
-# copiar restante do projeto
 COPY . .
 
-# compilar TypeScript
 RUN npm run build
-
-# remover devDependencies para imagem final menor
 RUN npm prune --production
 
 ENV NODE_ENV=production
 
-# criar diretórios usados pela aplicação (opcional)
 RUN mkdir -p /app/auth /app/data && chown -R node:node /app/auth /app/data
 
-# não usar VOLUME aqui (muitos PaaS não permitem); monte volumes ao rodar
 CMD ["node", "dist/index.js"]
