@@ -27,6 +27,4 @@ RUN npm prune --production
 
 ENV NODE_ENV=production
 
-VOLUME [ "/app/auth", "/app/pelada.db" ]
-
 CMD ["node", "dist/index.js"]
