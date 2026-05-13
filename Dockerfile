@@ -1,19 +1,27 @@
 FROM node:20
 
-# instalar deps para compilar módulos nativos
+# instalar deps do sistema necessárias para compilar módulos nativos (sqlite3, sharp, etc.)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 make g++ libsqlite3-dev && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+      python3 \
+      build-essential \
+      make \
+      g++ \
+      pkg-config \
+      ca-certificates \
+      libsqlite3-dev \
+      libvips-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# evitar copiar node_modules do host
+# copiar package.json (e lock) antes para aproveitar cache
 COPY package*.json ./
 
-# forçar build-from-source para módulos nativos (ex.: sqlite3)
+# forçar build-from-source para módulos nativos que precisam (garante binário compatível com a libc do container)
 ENV npm_config_build_from_source=true
 
-# instalar dependências (vai compilar sqlite3 no container)
+# instalar dependências (vai compilar o que for necessário)
 RUN npm ci
 
 # copiar restante do projeto
@@ -26,5 +34,8 @@ RUN npm run build
 RUN npm prune --production
 
 ENV NODE_ENV=production
+
+# montar volumes para persistir auth e DB ao rodar
+VOLUME [ "/app/auth", "/app/pelada.db" ]
 
 CMD ["node", "dist/index.js"]
