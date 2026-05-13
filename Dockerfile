@@ -44,7 +44,8 @@ RUN npm prune --production
 
 ENV NODE_ENV=production
 
-# montar volumes para persistir auth e DB ao rodar
-VOLUME [ "/app/auth", "/app/pelada.db" ]
+# criar diretórios usados pela aplicação (opcional)
+RUN mkdir -p /app/auth /app/data && chown -R node:node /app/auth /app/data
 
+# não usar VOLUME aqui (muitos PaaS não permitem); monte volumes ao rodar
 CMD ["node", "dist/index.js"]
