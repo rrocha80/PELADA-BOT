@@ -14,17 +14,19 @@ RUN apt-get update && \
       libjpeg-dev \
       libpng-dev \
       libwebp-dev \
+      libvips-dev \
+      libglib2.0-dev \
+      liborc-0.4-dev \
+      libcairo2-dev \
+      libgirepository1.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY package*.json ./
 
-# build-from-source apenas para sqlite3 (evita compilar sharp/libvips)
+# build-from-source apenas para sqlite3
 ENV npm_config_sqlite3_build_from_source=true
-
-# permite que sharp baixe binários pré-compilados (não build-from-source)
-# (não exportar npm_config_build_from_source)
 
 RUN npm ci
 
