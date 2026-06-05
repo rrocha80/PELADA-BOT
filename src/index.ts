@@ -141,25 +141,65 @@ async function conectarBot(): Promise<void> {
       return;
     }
 
+    // tratar selecao de lista interativa (listResponseMessage)
+    const listResp = msg.message?.listResponseMessage;
+    if (listResp) {
+      const selectedId = listResp.singleSelectReply?.selectedRowId;
+      const selectedTitle = (listResp.title || '').toLowerCase();
+
+      const allowed = pendingPelada.get(remoteJid);
+      if (!allowed || !allowed.has(senderJid)) {
+        await sock.sendMessage(remoteJid, { text: 'Para confirmar, primeiro digite "pelada".' });
+        return;
+      }
+
+      // remove permissão após uso
+      allowed.delete(senderJid);
+      if (allowed.size === 0) pendingPelada.delete(remoteJid);
+
+      if (selectedId === 'pelada_add' || selectedTitle.includes('colocar meu nome na lista')) {
+        adicionarParticipante(msg.pushName || 'Sem Nome', async () => {
+          const lista = await obterLista();
+          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+        });
+      } else if (selectedId === 'pelada_remove' || selectedTitle.includes('retirar meu nome da lista') || selectedTitle.includes('retiar meu nome da lista')) {
+        removerParticipante(msg.pushName || 'Sem Nome', async () => {
+          const lista = await obterLista();
+          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+        });
+      } else if (selectedId === 'pelada_show' || selectedTitle.includes('exibir a lista da pelada')) {
+        const lista = await obterLista();
+        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+      } else if (selectedId === 'pelada_guest' || selectedTitle.includes('incluir convidado')) {
+        pendingConvidado.set(remoteJid, senderJid);
+        await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado:' });
+      }
+      return;
+    }
+
     const texto: string = rawText.toLowerCase();
     const participante: string = msg.pushName || 'Sem Nome';
 
     // quando alguem digita "pelada" envia menu de acoes clicaveis
     if (texto === 'pelada') {
       allowPeladaConfirmation(remoteJid, senderJid);
-      const buttons = [
-        { buttonId: 'pelada_add', buttonText: { displayText: 'Colocar meu nome na lista' }, type: 1 },
-        { buttonId: 'pelada_remove', buttonText: { displayText: 'Retirar meu nome da lista' }, type: 1 },
-        { buttonId: 'pelada_show', buttonText: { displayText: 'Exibir a lista da pelada' }, type: 1 },
-        { buttonId: 'pelada_guest', buttonText: { displayText: 'Incluir convidado' }, type: 1 }
-      ];
-      await sock.sendMessage(remoteJid, {
-        text:
-`⚽ Confirme participação na pelada do dia ${DATA_PELADA}
 
-Escolha uma opção abaixo:`,
-        buttons,
-        headerType: 1
+      await sock.sendMessage(remoteJid, {
+        text: `⚽ Confirme participação na pelada do dia ${DATA_PELADA}`,
+        footer: 'Escolha uma opcao abaixo:',
+        title: 'Menu da Pelada',
+        buttonText: 'Ver opcoes',
+        sections: [
+          {
+            title: 'Acoes',
+            rows: [
+              { title: 'Colocar meu nome na lista', rowId: 'pelada_add' },
+              { title: 'Retirar meu nome da lista', rowId: 'pelada_remove' },
+              { title: 'Exibir a lista da pelada', rowId: 'pelada_show' },
+              { title: 'Incluir convidado', rowId: 'pelada_guest' }
+            ]
+          }
+        ]
       });
       return;
     }
