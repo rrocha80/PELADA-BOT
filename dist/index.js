@@ -4,6 +4,8 @@ import pino from 'pino';
 let makeWASocket;
 let useMultiFileAuthState;
 let DisconnectReason;
+let fetchLatestBaileysVersion;
+let Browsers;
 const logger = pino({ level: process.env.DEBUG ? 'debug' : 'info' });
 // novo: controla fluxo de pedir nome do convidado por grupo
 // agora guarda remoteJid -> inviterJid (quem pediu), para só aceitar resposta desse usuário
@@ -31,9 +33,25 @@ function allowPeladaConfirmation(remoteJid, senderJid, ttlMs = 2 * 60 * 1000) {
 }
 async function conectarBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth');
+    let version;
+    try {
+        if (fetchLatestBaileysVersion) {
+            const latest = await fetchLatestBaileysVersion();
+            version = latest?.version;
+            logger.info({ version, isLatest: latest?.isLatest }, 'Baileys version info');
+        }
+    }
+    catch (e) {
+        logger.warn({ e }, 'Nao foi possivel obter versao mais recente do WhatsApp Web');
+    }
     const sock = makeWASocket({
         auth: state,
-        logger
+        logger,
+        version,
+        browser: Browsers?.macOS ? Browsers.macOS('Desktop') : ['Pelada Bot', 'Desktop', '1.0.0'],
+        markOnlineOnConnect: false,
+        syncFullHistory: false,
+        generateHighQualityLinkPreview: false
     });
     sock.ev.on('creds.update', saveCreds);
     // substitua o handler atual por este (mais verboso e com reconexão)
@@ -433,7 +451,13 @@ const DATA_PELADA = getNextFriday();
 (async () => {
     try {
         const baileys = await import('@whiskeysockets/baileys');
-        ({ default: makeWASocket, useMultiFileAuthState, DisconnectReason } = baileys);
+        ({
+            default: makeWASocket,
+            useMultiFileAuthState,
+            DisconnectReason,
+            fetchLatestBaileysVersion,
+            Browsers
+        } = baileys);
         await conectarBot();
         console.log('Bot iniciado');
     }
