@@ -198,25 +198,20 @@ async function conectarBot(): Promise<void> {
     if (texto === 'pelada') {
       allowPeladaConfirmation(remoteJid, senderJid);
       await sock.sendMessage(remoteJid, {
-        text: `⚽ Confirme participação na pelada do dia ${DATA_PELADA}\n\nEscolha uma opcao abaixo:`,
-        buttons: [
-          { buttonId: 'pelada_add', buttonText: { displayText: 'Colocar meu nome na lista' }, type: 1 },
-          { buttonId: 'pelada_remove', buttonText: { displayText: 'Retirar meu nome da lista' }, type: 1 },
-          { buttonId: 'pelada_show', buttonText: { displayText: 'Exibir a lista da pelada' }, type: 1 }
-        ],
-        headerType: 1
+        poll: {
+          name: `⚽ Pelada ${DATA_PELADA} - escolha uma opcao`,
+          selectableCount: 1,
+          values: [
+            '1 - Colocar meu nome na lista',
+            '2 - Retirar meu nome da lista',
+            '3 - Exibir a lista da pelada',
+            '4 - Incluir convidado'
+          ]
+        }
       });
 
       await sock.sendMessage(remoteJid, {
-        text: 'Opcao extra:',
-        buttons: [
-          { buttonId: 'pelada_guest', buttonText: { displayText: 'Incluir convidado' }, type: 1 }
-        ],
-        headerType: 1
-      });
-
-      await sock.sendMessage(remoteJid, {
-        text: 'Se nao aparecer botao no seu app, responda: 1, 2, 3 ou 4.'
+        text: 'Toque na enquete (clicavel). Se preferir, responda com: 1, 2, 3 ou 4.'
       });
       return;
     }
