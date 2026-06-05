@@ -74,6 +74,8 @@ async function conectarBot() {
         if (qr) {
             // mostra ASCII no terminal
             qrcode.generate(qr, { small: true });
+            // string bruta do QR (para ambientes onde o ASCII nao aparece bem)
+            console.log('QR (url):', qr);
             logger.info('QR generated');
         }
         logger.info({ connection, lastDisconnect }, 'connection.update');
