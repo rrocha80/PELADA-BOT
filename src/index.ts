@@ -17,7 +17,7 @@ const pendingDelete = new Map<string, { type: 'convidados' | 'mensalistas'; requ
 const pendingDeleteSingle = new Map<string, { requesterJid: string; requesterName: string }>(); 
 // novo: controla pedido de apagar um mensalista específico (remoteJid -> { requesterJid, requesterName })
 const pendingDeleteSingleMensalista = new Map<string, { requesterJid: string; requesterName: string }>();
-// novo: controla quem pode confirmar após pedir "pelada"
+// controla quem pode clicar no menu logo apos pedir "pelada"
 const pendingPelada = new Map<string, Set<string>>(); // remoteJid -> set(senderJid)
 
 function allowPeladaConfirmation(remoteJid: string, senderJid: string, ttlMs = 2 * 60 * 1000) {
@@ -87,8 +87,64 @@ async function conectarBot(): Promise<void> {
       ''
     ).trim();
 
+    // tratar clique em botao (baileys buttonsResponseMessage)
+    const btnResp = msg.message?.buttonsResponseMessage;
+    if (btnResp) {
+      const selectedId = btnResp.selectedButtonId;
+      const display = (btnResp.selectedDisplayText || '').toLowerCase();
+
+      const allowed = pendingPelada.get(remoteJid);
+      if (!allowed || !allowed.has(senderJid)) {
+        await sock.sendMessage(remoteJid, { text: 'Para confirmar, primeiro digite "pelada".' });
+        return;
+      }
+
+      // remove permissão após uso
+      allowed.delete(senderJid);
+      if (allowed.size === 0) pendingPelada.delete(remoteJid);
+
+      if (selectedId === 'pelada_add' || display.includes('colocar meu nome na lista') || selectedId === 'pelada_sim' || display.includes('sim')) {
+        adicionarParticipante(msg.pushName || 'Sem Nome', async () => {
+          const lista = await obterLista();
+          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+        });
+      } else if (selectedId === 'pelada_remove' || display.includes('retirar meu nome da lista') || display.includes('retiar meu nome da lista') || selectedId === 'pelada_nao' || display.includes('não') || display.includes('nao')) {
+        removerParticipante(msg.pushName || 'Sem Nome', async () => {
+          const lista = await obterLista();
+          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+        });
+      } else if (selectedId === 'pelada_show' || display.includes('exibir a lista da pelada')) {
+        const lista = await obterLista();
+        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+      } else if (selectedId === 'pelada_guest' || display.includes('incluir convidado')) {
+        pendingConvidado.set(remoteJid, senderJid);
+        await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado:' });
+      }
+      return;
+    }
+
     const texto: string = rawText.toLowerCase();
     const participante: string = msg.pushName || 'Sem Nome';
+
+    // quando alguem digita "pelada" envia menu de acoes clicaveis
+    if (texto === 'pelada') {
+      allowPeladaConfirmation(remoteJid, senderJid);
+      const buttons = [
+        { buttonId: 'pelada_add', buttonText: { displayText: 'Colocar meu nome na lista' }, type: 1 },
+        { buttonId: 'pelada_remove', buttonText: { displayText: 'Retirar meu nome da lista' }, type: 1 },
+        { buttonId: 'pelada_show', buttonText: { displayText: 'Exibir a lista da pelada' }, type: 1 },
+        { buttonId: 'pelada_guest', buttonText: { displayText: 'Incluir convidado' }, type: 1 }
+      ];
+      await sock.sendMessage(remoteJid, {
+        text:
+`⚽ Confirme participação na pelada do dia ${DATA_PELADA}
+
+Escolha uma opção abaixo:`,
+        buttons,
+        headerType: 1
+      });
+      return;
+    }
 
     // início do fluxo: registra quem pediu (inviterJid) no map
     if (texto === 'convidado' || texto === 'convidade') {
@@ -141,19 +197,6 @@ async function conectarBot(): Promise<void> {
     }
     // se existir pending mas quem respondeu não é o convidador, ignore o pending e prossiga normalmente
 
-    if (texto === 'pelada') {
-      await sock.sendMessage(remoteJid, {
-        text:
-`⚽ Confirme participação na pelada do dia ${DATA_PELADA}
-
-Digite:
-SIM
-ou
-NÃO`
-      });
-      return;
-    }
-
     if (['sim','s','bora','dentro'].includes(texto)) {
       adicionarParticipante(participante, async () => {
         const lista = await obterLista();
@@ -166,6 +209,34 @@ NÃO`
         const lista = await obterLista();
         await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
       });
+    }
+
+    if (texto === 'colocar meu nome na lista') {
+      adicionarParticipante(participante, async () => {
+        const lista = await obterLista();
+        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+      });
+      return;
+    }
+
+    if (texto === 'retirar meu nome da lista' || texto === 'retiar meu nome da lista') {
+      removerParticipante(participante, async () => {
+        const lista = await obterLista();
+        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+      });
+      return;
+    }
+
+    if (texto === 'exibir a lista da pelada') {
+      const lista = await obterLista();
+      await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+      return;
+    }
+
+    if (texto === 'incluir convidado') {
+      pendingConvidado.set(remoteJid, senderJid);
+      await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado:' });
+      return;
     }
 
     // fluxo de confirmação por senha para apagar listas
