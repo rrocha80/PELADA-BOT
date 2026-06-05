@@ -7,8 +7,6 @@ let useMultiFileAuthState: any;
 let DisconnectReason: any;
 let fetchLatestBaileysVersion: any;
 let Browsers: any;
-let generateWAMessageFromContent: any;
-let WAProto: any;
 
 const logger = pino({ level: process.env.DEBUG ? 'debug' : 'info' });
 
@@ -185,48 +183,27 @@ async function conectarBot(): Promise<void> {
     // quando alguem digita "pelada" envia menu de acoes clicaveis
     if (texto === 'pelada') {
       allowPeladaConfirmation(remoteJid, senderJid);
-
-      const nativeList = WAProto?.Message?.fromObject?.({
-        listMessage: {
-          title: 'Menu da Pelada',
-          description: `⚽ Confirme participação na pelada do dia ${DATA_PELADA}`,
-          footerText: 'Escolha uma opcao abaixo:',
-          buttonText: 'Ver opcoes',
-          listType: 1,
-          sections: [
-            {
-              title: 'Acoes',
-              rows: [
-                { title: 'Colocar meu nome na lista', rowId: 'pelada_add' },
-                { title: 'Retirar meu nome da lista', rowId: 'pelada_remove' },
-                { title: 'Exibir a lista da pelada', rowId: 'pelada_show' },
-                { title: 'Incluir convidado', rowId: 'pelada_guest' }
-              ]
-            }
-          ]
-        }
+      await sock.sendMessage(remoteJid, {
+        text: `⚽ Confirme participação na pelada do dia ${DATA_PELADA}\n\nEscolha uma opcao abaixo:`,
+        buttons: [
+          { buttonId: 'pelada_add', buttonText: { displayText: 'Colocar meu nome na lista' }, type: 1 },
+          { buttonId: 'pelada_remove', buttonText: { displayText: 'Retirar meu nome da lista' }, type: 1 },
+          { buttonId: 'pelada_show', buttonText: { displayText: 'Exibir a lista da pelada' }, type: 1 }
+        ],
+        headerType: 1
       });
 
-      if (nativeList && generateWAMessageFromContent) {
-        const waMessage = generateWAMessageFromContent(
-          remoteJid,
-          nativeList,
-          { userJid: sock.user?.id || '' }
-        );
-        await sock.relayMessage(remoteJid, waMessage.message, { messageId: waMessage.key.id });
-      } else {
-        await sock.sendMessage(remoteJid, {
-          text:
-`⚽ Confirme participação na pelada do dia ${DATA_PELADA}
+      await sock.sendMessage(remoteJid, {
+        text: 'Opcao extra:',
+        buttons: [
+          { buttonId: 'pelada_guest', buttonText: { displayText: 'Incluir convidado' }, type: 1 }
+        ],
+        headerType: 1
+      });
 
-Seu WhatsApp não exibiu o menu.
-Use uma opção:
-1 - Colocar meu nome na lista
-2 - Retirar meu nome da lista
-3 - Exibir a lista da pelada
-4 - Incluir convidado`
-        });
-      }
+      await sock.sendMessage(remoteJid, {
+        text: 'Se nao aparecer botao no seu app, responda: 1, 2, 3 ou 4.'
+      });
       return;
     }
 
@@ -646,9 +623,7 @@ const DATA_PELADA = getNextFriday();
       useMultiFileAuthState,
       DisconnectReason,
       fetchLatestBaileysVersion,
-      Browsers,
-      generateWAMessageFromContent,
-      proto: WAProto
+      Browsers
     } = baileys as any);
     await conectarBot();
     console.log('Bot iniciado');
