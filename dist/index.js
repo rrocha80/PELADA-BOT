@@ -32,7 +32,8 @@ function allowPeladaConfirmation(remoteJid, senderJid, ttlMs = 2 * 60 * 1000) {
     }, ttlMs);
 }
 async function conectarBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth');
+    const authDir = process.env.AUTH_DIR || 'auth';
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
     let version;
     try {
         if (fetchLatestBaileysVersion) {
@@ -76,6 +77,7 @@ async function conectarBot() {
             qrcode.generate(qr, { small: true });
             // string bruta do QR (para ambientes onde o ASCII nao aparece bem)
             console.log('QR (url):', qr);
+            console.log('Escaneie o QR no app WhatsApp > Dispositivos conectados. Nao cole a string QR (url).');
             logger.info('QR generated');
         }
         logger.info({ connection, lastDisconnect }, 'connection.update');
@@ -85,7 +87,17 @@ async function conectarBot() {
         if (connection === 'close') {
             const err = lastDisconnect?.error;
             logger.warn({ err }, 'connection closed');
-            const isLoggedOut = err?.output?.statusCode === DisconnectReason?.loggedOut;
+            const statusCode = err?.output?.statusCode;
+            const conflictType = err?.data?.content?.[0]?.attrs?.type;
+            const isLoggedOut = statusCode === DisconnectReason?.loggedOut;
+            if (statusCode === 515) {
+                logger.info('WhatsApp pediu restart da conexao (515). Reconectando...');
+            }
+            if (conflictType === 'device_removed' || statusCode === 401) {
+                logger.error({ authDir }, 'Dispositivo removido pelo WhatsApp. Remova a sessao em auth e pareie novamente.');
+                logger.info('Opcional: use codigo numerico definindo PAIRING_PHONE=55DDDNUMERO.');
+                return;
+            }
             if (!isLoggedOut) {
                 logger.info('Tentando reconectar em 3s...');
                 setTimeout(() => conectarBot().catch(e => logger.error({ e }, 'reconnect failed')), 3000);
