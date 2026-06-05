@@ -52,12 +52,26 @@ async function conectarBot(): Promise<void> {
   const sock = makeWASocket({
     auth: state as any,
     logger,
+    printQRInTerminal: true,
     version,
     browser: Browsers?.macOS ? Browsers.macOS('Desktop') : ['Pelada Bot', 'Desktop', '1.0.0'],
     markOnlineOnConnect: false,
     syncFullHistory: false,
     generateHighQualityLinkPreview: false
   });
+
+  // opcional: pareamento por codigo numerico (evita problemas de leitura de QR)
+  const phoneForPairing = (process.env.PAIRING_PHONE || '').replace(/\D/g, '');
+  if (phoneForPairing && !state?.creds?.registered) {
+    try {
+      const code = await sock.requestPairingCode(phoneForPairing);
+      const formatted = code?.match(/.{1,4}/g)?.join('-') || code;
+      logger.info({ phoneForPairing }, 'Pareamento por codigo habilitado');
+      console.log('Codigo de pareamento:', formatted);
+    } catch (e) {
+      logger.error({ e }, 'Falha ao gerar codigo de pareamento');
+    }
+  }
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -67,8 +81,6 @@ async function conectarBot(): Promise<void> {
     if (qr) {
       // mostra ASCII no terminal
       qrcode.generate(qr, { small: true });
-      // imprime url/base64 caso prefira abrir no navegador
-      console.log('QR (url):', qr);
       logger.info('QR generated');
     }
     logger.info({ connection, lastDisconnect }, 'connection.update');
