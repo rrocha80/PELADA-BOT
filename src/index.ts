@@ -134,6 +134,62 @@ async function conectarBot(): Promise<void> {
       ''
     ).trim();
 
+    const runPeladaAction = async (actionId: string) => {
+      if (actionId === 'pelada_add') {
+        adicionarParticipante(msg.pushName || 'Sem Nome', async () => {
+          const lista = await obterLista();
+          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+        });
+        return;
+      }
+
+      if (actionId === 'pelada_remove') {
+        removerParticipante(msg.pushName || 'Sem Nome', async () => {
+          const lista = await obterLista();
+          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+        });
+        return;
+      }
+
+      if (actionId === 'pelada_show') {
+        const lista = await obterLista();
+        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+        return;
+      }
+
+      if (actionId === 'pelada_guest') {
+        pendingConvidado.set(remoteJid, senderJid);
+        await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado:' });
+      }
+    };
+
+    // tratar clique em template quick reply
+    const templateResp = msg.message?.templateButtonReplyMessage;
+    if (templateResp) {
+      const selectedId = templateResp.selectedId;
+      const display = (templateResp.selectedDisplayText || '').toLowerCase();
+
+      const allowed = pendingPelada.get(remoteJid);
+      if (!allowed || !allowed.has(senderJid)) {
+        await sock.sendMessage(remoteJid, { text: 'Para confirmar, primeiro digite "pelada".' });
+        return;
+      }
+
+      allowed.delete(senderJid);
+      if (allowed.size === 0) pendingPelada.delete(remoteJid);
+
+      if (selectedId === 'pelada_add' || display.includes('colocar meu nome na lista')) {
+        await runPeladaAction('pelada_add');
+      } else if (selectedId === 'pelada_remove' || display.includes('retirar meu nome da lista') || display.includes('retiar meu nome da lista')) {
+        await runPeladaAction('pelada_remove');
+      } else if (selectedId === 'pelada_show' || display.includes('exibir a lista da pelada')) {
+        await runPeladaAction('pelada_show');
+      } else if (selectedId === 'pelada_guest' || display.includes('incluir convidado')) {
+        await runPeladaAction('pelada_guest');
+      }
+      return;
+    }
+
     // tratar clique em botao (baileys buttonsResponseMessage)
     const btnResp = msg.message?.buttonsResponseMessage;
     if (btnResp) {
@@ -151,21 +207,13 @@ async function conectarBot(): Promise<void> {
       if (allowed.size === 0) pendingPelada.delete(remoteJid);
 
       if (selectedId === 'pelada_add' || display.includes('colocar meu nome na lista') || selectedId === 'pelada_sim' || display.includes('sim')) {
-        adicionarParticipante(msg.pushName || 'Sem Nome', async () => {
-          const lista = await obterLista();
-          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
-        });
+        await runPeladaAction('pelada_add');
       } else if (selectedId === 'pelada_remove' || display.includes('retirar meu nome da lista') || display.includes('retiar meu nome da lista') || selectedId === 'pelada_nao' || display.includes('não') || display.includes('nao')) {
-        removerParticipante(msg.pushName || 'Sem Nome', async () => {
-          const lista = await obterLista();
-          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
-        });
+        await runPeladaAction('pelada_remove');
       } else if (selectedId === 'pelada_show' || display.includes('exibir a lista da pelada')) {
-        const lista = await obterLista();
-        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+        await runPeladaAction('pelada_show');
       } else if (selectedId === 'pelada_guest' || display.includes('incluir convidado')) {
-        pendingConvidado.set(remoteJid, senderJid);
-        await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado:' });
+        await runPeladaAction('pelada_guest');
       }
       return;
     }
@@ -187,21 +235,13 @@ async function conectarBot(): Promise<void> {
       if (allowed.size === 0) pendingPelada.delete(remoteJid);
 
       if (selectedId === 'pelada_add' || selectedTitle.includes('colocar meu nome na lista')) {
-        adicionarParticipante(msg.pushName || 'Sem Nome', async () => {
-          const lista = await obterLista();
-          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
-        });
+        await runPeladaAction('pelada_add');
       } else if (selectedId === 'pelada_remove' || selectedTitle.includes('retirar meu nome da lista') || selectedTitle.includes('retiar meu nome da lista')) {
-        removerParticipante(msg.pushName || 'Sem Nome', async () => {
-          const lista = await obterLista();
-          await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
-        });
+        await runPeladaAction('pelada_remove');
       } else if (selectedId === 'pelada_show' || selectedTitle.includes('exibir a lista da pelada')) {
-        const lista = await obterLista();
-        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+        await runPeladaAction('pelada_show');
       } else if (selectedId === 'pelada_guest' || selectedTitle.includes('incluir convidado')) {
-        pendingConvidado.set(remoteJid, senderJid);
-        await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado:' });
+        await runPeladaAction('pelada_guest');
       }
       return;
     }
@@ -213,49 +253,48 @@ async function conectarBot(): Promise<void> {
     if (texto === 'pelada') {
       allowPeladaConfirmation(remoteJid, senderJid);
       await sock.sendMessage(remoteJid, {
-        poll: {
-          name: `⚽ Pelada ${DATA_PELADA} - escolha uma opcao`,
-          selectableCount: 1,
-          values: [
-            '1 - Colocar meu nome na lista',
-            '2 - Retirar meu nome da lista',
-            '3 - Exibir a lista da pelada',
-            '4 - Incluir convidado'
-          ]
-        }
+        text: `⚽ Pelada ${DATA_PELADA}`,
+        footer: 'Clique em uma opcao:',
+        buttons: [
+          { buttonId: 'pelada_add', buttonText: { displayText: '✅ Colocar meu nome na lista' }, type: 1 },
+          { buttonId: 'pelada_remove', buttonText: { displayText: '❌ Retirar meu nome da lista' }, type: 1 },
+          { buttonId: 'pelada_show', buttonText: { displayText: '📋 Exibir a lista da pelada' }, type: 1 }
+        ]
       });
 
       await sock.sendMessage(remoteJid, {
-        text: 'Toque na enquete (clicavel). Se preferir, responda com: 1, 2, 3 ou 4.'
+        text: 'Mais opcoes:',
+        footer: 'Clique em uma opcao:',
+        buttons: [
+          { buttonId: 'pelada_guest', buttonText: { displayText: '👤 Incluir convidado' }, type: 1 }
+        ]
+      });
+
+      await sock.sendMessage(remoteJid, {
+        text:
+          'Se os botoes nao aparecerem no seu WhatsApp, responda com:\n' +
+          '1 - Colocar meu nome na lista\n' +
+          '2 - Retirar meu nome da lista\n' +
+          '3 - Exibir a lista da pelada\n' +
+          '4 - Incluir convidado'
       });
       return;
     }
 
-    if (texto === '1') {
-      adicionarParticipante(participante, async () => {
-        const lista = await obterLista();
-        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
-      });
-      return;
-    }
+    const allowedByNumber = pendingPelada.get(remoteJid);
+    if (allowedByNumber && allowedByNumber.has(senderJid) && ['1', '2', '3', '4'].includes(texto)) {
+      allowedByNumber.delete(senderJid);
+      if (allowedByNumber.size === 0) pendingPelada.delete(remoteJid);
 
-    if (texto === '2') {
-      removerParticipante(participante, async () => {
-        const lista = await obterLista();
-        await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
-      });
-      return;
-    }
-
-    if (texto === '3') {
-      const lista = await obterLista();
-      await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
-      return;
-    }
-
-    if (texto === '4') {
-      pendingConvidado.set(remoteJid, senderJid);
-      await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado:' });
+      if (texto === '1') {
+        await runPeladaAction('pelada_add');
+      } else if (texto === '2') {
+        await runPeladaAction('pelada_remove');
+      } else if (texto === '3') {
+        await runPeladaAction('pelada_show');
+      } else if (texto === '4') {
+        await runPeladaAction('pelada_guest');
+      }
       return;
     }
 

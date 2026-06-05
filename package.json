@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "dev": "npm run build && npm run start"
+    "dev": "npm run build && npm run start",
+    "reauth": "rm -rf auth && npm run build && npm run start"
   },
   "devDependencies": {
     "ts-node": "^10.9.1",
@@ -13,7 +14,7 @@
     "@types/node": "^20.0.0"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.18",
+    "@whiskeysockets/baileys": "7.0.0-rc10",
     "qrcode-terminal": "*",
     "sqlite3": "*"
   }
