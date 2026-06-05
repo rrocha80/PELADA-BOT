@@ -6,6 +6,8 @@ let useMultiFileAuthState;
 let DisconnectReason;
 let fetchLatestBaileysVersion;
 let Browsers;
+let generateWAMessageFromContent;
+let WAProto;
 const logger = pino({ level: process.env.DEBUG ? 'debug' : 'info' });
 // novo: controla fluxo de pedir nome do convidado por grupo
 // agora guarda remoteJid -> inviterJid (quem pediu), para só aceitar resposta desse usuário
@@ -169,23 +171,66 @@ async function conectarBot() {
         // quando alguem digita "pelada" envia menu de acoes clicaveis
         if (texto === 'pelada') {
             allowPeladaConfirmation(remoteJid, senderJid);
-            await sock.sendMessage(remoteJid, {
-                text: `⚽ Confirme participação na pelada do dia ${DATA_PELADA}`,
-                footer: 'Escolha uma opcao abaixo:',
-                title: 'Menu da Pelada',
-                buttonText: 'Ver opcoes',
-                sections: [
-                    {
-                        title: 'Acoes',
-                        rows: [
-                            { title: 'Colocar meu nome na lista', rowId: 'pelada_add' },
-                            { title: 'Retirar meu nome da lista', rowId: 'pelada_remove' },
-                            { title: 'Exibir a lista da pelada', rowId: 'pelada_show' },
-                            { title: 'Incluir convidado', rowId: 'pelada_guest' }
-                        ]
-                    }
-                ]
+            const nativeList = WAProto?.Message?.fromObject?.({
+                listMessage: {
+                    title: 'Menu da Pelada',
+                    description: `⚽ Confirme participação na pelada do dia ${DATA_PELADA}`,
+                    footerText: 'Escolha uma opcao abaixo:',
+                    buttonText: 'Ver opcoes',
+                    listType: 1,
+                    sections: [
+                        {
+                            title: 'Acoes',
+                            rows: [
+                                { title: 'Colocar meu nome na lista', rowId: 'pelada_add' },
+                                { title: 'Retirar meu nome da lista', rowId: 'pelada_remove' },
+                                { title: 'Exibir a lista da pelada', rowId: 'pelada_show' },
+                                { title: 'Incluir convidado', rowId: 'pelada_guest' }
+                            ]
+                        }
+                    ]
+                }
             });
+            if (nativeList && generateWAMessageFromContent) {
+                const waMessage = generateWAMessageFromContent(remoteJid, nativeList, { userJid: sock.user?.id || '' });
+                await sock.relayMessage(remoteJid, waMessage.message, { messageId: waMessage.key.id });
+            }
+            else {
+                await sock.sendMessage(remoteJid, {
+                    text: `⚽ Confirme participação na pelada do dia ${DATA_PELADA}
+
+Seu WhatsApp não exibiu o menu.
+Use uma opção:
+1 - Colocar meu nome na lista
+2 - Retirar meu nome da lista
+3 - Exibir a lista da pelada
+4 - Incluir convidado`
+                });
+            }
+            return;
+        }
+        if (texto === '1') {
+            adicionarParticipante(participante, async () => {
+                const lista = await obterLista();
+                await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+            });
+            return;
+        }
+        if (texto === '2') {
+            removerParticipante(participante, async () => {
+                const lista = await obterLista();
+                await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+            });
+            return;
+        }
+        if (texto === '3') {
+            const lista = await obterLista();
+            await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
+            return;
+        }
+        if (texto === '4') {
+            pendingConvidado.set(remoteJid, senderJid);
+            await sock.sendMessage(remoteJid, { text: 'Digite o nome do convidado:' });
             return;
         }
         // início do fluxo: registra quem pediu (inviterJid) no map
@@ -496,7 +541,9 @@ const DATA_PELADA = getNextFriday();
             useMultiFileAuthState,
             DisconnectReason,
             fetchLatestBaileysVersion,
-            Browsers
+            Browsers,
+            generateWAMessageFromContent,
+            proto: WAProto
         } = baileys);
         await conectarBot();
         console.log('Bot iniciado');
