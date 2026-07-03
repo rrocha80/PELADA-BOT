@@ -22,6 +22,7 @@ const pendingDeleteSingle = new Map<string, { requesterJid: string; requesterNam
 const pendingDeleteSingleMensalista = new Map<string, { requesterJid: string; requesterName: string }>();
 // controla quem pode clicar no menu logo apos pedir "pelada"
 const pendingPelada = new Map<string, Set<string>>(); // remoteJid -> set(senderJid)
+let reconnectAttempts = 0;
 
 function allowPeladaConfirmation(remoteJid: string, senderJid: string, ttlMs = 2 * 60 * 1000) {
   let set = pendingPelada.get(remoteJid);
@@ -61,6 +62,10 @@ async function conectarBot(): Promise<void> {
     printQRInTerminal: false,
     version,
     browser: Browsers?.macOS ? Browsers.macOS('Desktop') : ['Pelada Bot', 'Desktop', '1.0.0'],
+    connectTimeoutMs: 60_000,
+    defaultQueryTimeoutMs: 60_000,
+    keepAliveIntervalMs: 10_000,
+    retryRequestDelayMs: 1_500,
     markOnlineOnConnect: false,
     syncFullHistory: false,
     generateHighQualityLinkPreview: false
@@ -181,6 +186,7 @@ async function conectarBot(): Promise<void> {
     }
 
     if (connection === 'open') {
+      reconnectAttempts = 0;
       logger.info('Bot conectado com sucesso!');
     }
 
@@ -190,6 +196,7 @@ async function conectarBot(): Promise<void> {
 
       const statusCode = err?.output?.statusCode;
       const conflictType = err?.data?.content?.[0]?.attrs?.type;
+      const errMessage = err?.message || err?.toString?.() || '';
       const isLoggedOut = statusCode === DisconnectReason?.loggedOut;
 
       if (statusCode === 515) {
@@ -203,8 +210,13 @@ async function conectarBot(): Promise<void> {
       }
 
       if (!isLoggedOut) {
-        logger.info('Tentando reconectar em 3s...');
-        setTimeout(() => conectarBot().catch(e => logger.error({ e }, 'reconnect failed')), 3000);
+        reconnectAttempts += 1;
+        const delayMs = Math.min(30_000, 2_000 * reconnectAttempts);
+        logger.warn({ statusCode, errMessage, reconnectAttempts, delayMs }, 'Conexao caiu. Tentando reconectar...');
+        if (errMessage.toLowerCase().includes('websocket')) {
+          logger.warn('Falha de WebSocket detectada. Verifique rede/VPN/proxy; o bot continuara tentando reconectar automaticamente.');
+        }
+        setTimeout(() => conectarBot().catch(e => logger.error({ e }, 'reconnect failed')), delayMs);
       } else {
         logger.info('Sessão foi desconectada (logged out). Apague auth/ e reautentique.');
       }
