@@ -769,6 +769,7 @@ function getNextFriday(): string {
   const day = today.getDay(); // 0=Sun ... 5=Fri, 6=Sat
   const target = 5; // Friday
   let diff = (target - day + 7) % 7;
+  
   // se hoje for sexta, mantém hoje; senão, usa a próxima sexta
   const next = new Date(today);
   next.setDate(today.getDate() + diff);
