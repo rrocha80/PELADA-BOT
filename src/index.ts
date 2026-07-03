@@ -39,6 +39,8 @@ function allowPeladaConfirmation(remoteJid: string, senderJid: string, ttlMs = 2
 async function conectarBot(): Promise<void> {
   const authDir = process.env.AUTH_DIR || 'auth';
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  const phoneForPairing = (process.env.PAIRING_PHONE || '').replace(/\D/g, '');
+  let pairingCodeIssued = false;
 
   let version: [number, number, number] | undefined;
   try {
@@ -54,7 +56,7 @@ async function conectarBot(): Promise<void> {
   const sock = makeWASocket({
     auth: state as any,
     logger,
-    printQRInTerminal: true,
+    printQRInTerminal: false,
     version,
     browser: Browsers?.macOS ? Browsers.macOS('Desktop') : ['Pelada Bot', 'Desktop', '1.0.0'],
     markOnlineOnConnect: false,
@@ -62,17 +64,24 @@ async function conectarBot(): Promise<void> {
     generateHighQualityLinkPreview: false
   });
 
-  // opcional: pareamento por codigo numerico (evita problemas de leitura de QR)
-  const phoneForPairing = (process.env.PAIRING_PHONE || '').replace(/\D/g, '');
-  if (phoneForPairing && !state?.creds?.registered) {
+  const requestPairingCode = async () => {
+    if (!phoneForPairing || state?.creds?.registered || pairingCodeIssued) return;
     try {
       const code = await sock.requestPairingCode(phoneForPairing);
       const formatted = code?.match(/.{1,4}/g)?.join('-') || code;
+      pairingCodeIssued = true;
       logger.info({ phoneForPairing }, 'Pareamento por codigo habilitado');
       console.log('Codigo de pareamento:', formatted);
     } catch (e) {
       logger.error({ e }, 'Falha ao gerar codigo de pareamento');
     }
+  };
+
+  // opcional: pareamento por codigo numerico (evita problemas de leitura de QR)
+  if (phoneForPairing && !state?.creds?.registered) {
+    await requestPairingCode();
+  } else if (!state?.creds?.registered) {
+    logger.info('Defina PAIRING_PHONE=55DDDNUMERO para parear por codigo numerico e evitar falhas no QR.');
   }
 
   sock.ev.on('creds.update', saveCreds);
@@ -138,6 +147,9 @@ async function conectarBot(): Promise<void> {
   sock.ev.on('connection.update', (update: any) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
+      if (phoneForPairing && !state?.creds?.registered && !pairingCodeIssued) {
+        requestPairingCode().catch(e => logger.error({ e }, 'Falha ao solicitar codigo de pareamento no evento QR'));
+      }
       // mostra ASCII no terminal
       qrcode.generate(qr, { small: true });
       // string bruta do QR (para ambientes onde o ASCII nao aparece bem)

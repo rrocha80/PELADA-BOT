@@ -35,6 +35,8 @@ function allowPeladaConfirmation(remoteJid, senderJid, ttlMs = 2 * 60 * 1000) {
 async function conectarBot() {
     const authDir = process.env.AUTH_DIR || 'auth';
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    const phoneForPairing = (process.env.PAIRING_PHONE || '').replace(/\D/g, '');
+    let pairingCodeIssued = false;
     let version;
     try {
         if (fetchLatestBaileysVersion) {
@@ -49,25 +51,33 @@ async function conectarBot() {
     const sock = makeWASocket({
         auth: state,
         logger,
-        printQRInTerminal: true,
+        printQRInTerminal: false,
         version,
         browser: Browsers?.macOS ? Browsers.macOS('Desktop') : ['Pelada Bot', 'Desktop', '1.0.0'],
         markOnlineOnConnect: false,
         syncFullHistory: false,
         generateHighQualityLinkPreview: false
     });
-    // opcional: pareamento por codigo numerico (evita problemas de leitura de QR)
-    const phoneForPairing = (process.env.PAIRING_PHONE || '').replace(/\D/g, '');
-    if (phoneForPairing && !state?.creds?.registered) {
+    const requestPairingCode = async () => {
+        if (!phoneForPairing || state?.creds?.registered || pairingCodeIssued)
+            return;
         try {
             const code = await sock.requestPairingCode(phoneForPairing);
             const formatted = code?.match(/.{1,4}/g)?.join('-') || code;
+            pairingCodeIssued = true;
             logger.info({ phoneForPairing }, 'Pareamento por codigo habilitado');
             console.log('Codigo de pareamento:', formatted);
         }
         catch (e) {
             logger.error({ e }, 'Falha ao gerar codigo de pareamento');
         }
+    };
+    // opcional: pareamento por codigo numerico (evita problemas de leitura de QR)
+    if (phoneForPairing && !state?.creds?.registered) {
+        await requestPairingCode();
+    }
+    else if (!state?.creds?.registered) {
+        logger.info('Defina PAIRING_PHONE=55DDDNUMERO para parear por codigo numerico e evitar falhas no QR.');
     }
     sock.ev.on('creds.update', saveCreds);
     const sendPeladaListMenu = async (jid) => {
@@ -127,6 +137,9 @@ async function conectarBot() {
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
+            if (phoneForPairing && !state?.creds?.registered && !pairingCodeIssued) {
+                requestPairingCode().catch(e => logger.error({ e }, 'Falha ao solicitar codigo de pareamento no evento QR'));
+            }
             // mostra ASCII no terminal
             qrcode.generate(qr, { small: true });
             // string bruta do QR (para ambientes onde o ASCII nao aparece bem)
@@ -664,9 +677,7 @@ function getNextFriday() {
     const day = today.getDay(); // 0=Sun ... 5=Fri, 6=Sat
     const target = 5; // Friday
     let diff = (target - day + 7) % 7;
-    // garante que seja sempre no futuro (próxima sexta)
-    if (diff === 0)
-        diff = 7;
+    // se hoje for sexta, mantém hoje; senão, usa a próxima sexta
     const next = new Date(today);
     next.setDate(today.getDate() + diff);
     const d = pad(next.getDate());
