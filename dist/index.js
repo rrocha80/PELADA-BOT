@@ -37,6 +37,8 @@ async function conectarBot() {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const phoneForPairing = (process.env.PAIRING_PHONE || '').replace(/\D/g, '');
     let pairingCodeIssued = false;
+    let pairingCodeInFlight = false;
+    let pairingAttempts = 0;
     let version;
     try {
         if (fetchLatestBaileysVersion) {
@@ -59,8 +61,10 @@ async function conectarBot() {
         generateHighQualityLinkPreview: false
     });
     const requestPairingCode = async () => {
-        if (!phoneForPairing || state?.creds?.registered || pairingCodeIssued)
+        if (!phoneForPairing || state?.creds?.registered || pairingCodeIssued || pairingCodeInFlight)
             return;
+        pairingCodeInFlight = true;
+        pairingAttempts += 1;
         try {
             const code = await sock.requestPairingCode(phoneForPairing);
             const formatted = code?.match(/.{1,4}/g)?.join('-') || code;
@@ -69,12 +73,25 @@ async function conectarBot() {
             console.log('Codigo de pareamento:', formatted);
         }
         catch (e) {
-            logger.error({ e }, 'Falha ao gerar codigo de pareamento');
+            logger.error({ e, pairingAttempts }, 'Falha ao gerar codigo de pareamento');
+            if (pairingAttempts < 5) {
+                setTimeout(() => {
+                    requestPairingCode().catch(err => logger.error({ err }, 'Nova tentativa de pareamento por codigo falhou'));
+                }, 2000);
+            }
+        }
+        finally {
+            pairingCodeInFlight = false;
         }
     };
     // opcional: pareamento por codigo numerico (evita problemas de leitura de QR)
     if (phoneForPairing && !state?.creds?.registered) {
-        await requestPairingCode();
+        if (!/^55\d{10,11}$/.test(phoneForPairing)) {
+            logger.warn({ phoneForPairing }, 'PAIRING_PHONE parece invalido. Use apenas digitos no formato 55DDDNUMERO.');
+        }
+        else {
+            logger.info({ phoneForPairing }, 'Pareamento por codigo sera solicitado assim que a conexao iniciar.');
+        }
     }
     else if (!state?.creds?.registered) {
         logger.info('Defina PAIRING_PHONE=55DDDNUMERO para parear por codigo numerico e evitar falhas no QR.');
@@ -148,6 +165,11 @@ async function conectarBot() {
             logger.info('QR generated');
         }
         logger.info({ connection, lastDisconnect }, 'connection.update');
+        if (connection === 'connecting' && phoneForPairing && !state?.creds?.registered && !pairingCodeIssued) {
+            setTimeout(() => {
+                requestPairingCode().catch(e => logger.error({ e }, 'Falha ao solicitar codigo de pareamento no evento connecting'));
+            }, 1500);
+        }
         if (connection === 'open') {
             logger.info('Bot conectado com sucesso!');
         }
