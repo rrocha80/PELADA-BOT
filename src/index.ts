@@ -7,6 +7,7 @@ let useMultiFileAuthState: any;
 let DisconnectReason: any;
 let fetchLatestBaileysVersion: any;
 let Browsers: any;
+let generateWAMessageFromContent: any;
 
 const logger = pino({ level: process.env.DEBUG ? 'debug' : 'info' });
 
@@ -75,6 +76,63 @@ async function conectarBot(): Promise<void> {
   }
 
   sock.ev.on('creds.update', saveCreds);
+
+  const sendPeladaListMenu = async (jid: string) => {
+    const paramsJson = JSON.stringify({
+      title: 'Ver opcoes',
+      sections: [
+        {
+          title: 'Acoes da pelada',
+          rows: [
+            {
+              id: 'pelada_add',
+              title: '✅ Colocar meu nome na lista',
+              description: 'Confirmar presenca na pelada'
+            },
+            {
+              id: 'pelada_remove',
+              title: '❌ Retirar meu nome da lista',
+              description: 'Remover presenca da lista'
+            },
+            {
+              id: 'pelada_show',
+              title: '📋 Exibir a lista da pelada',
+              description: 'Mostrar mensalistas e convidados'
+            },
+            {
+              id: 'pelada_guest',
+              title: '👤 Incluir convidado',
+              description: 'Adicionar convidado para esta pelada'
+            }
+          ]
+        }
+      ]
+    });
+
+    const content = {
+      buttonsMessage: {
+        contentText: `⚽ Pelada ${DATA_PELADA}`,
+        footerText: 'Toque para selecionar um item.',
+        headerType: 1,
+        buttons: [
+          {
+            buttonId: 'pelada_menu',
+            type: 2,
+            nativeFlowInfo: {
+              name: 'single_select',
+              paramsJson
+            }
+          }
+        ]
+      }
+    };
+
+    const msg = generateWAMessageFromContent(jid, content, {
+      userJid: sock.user?.id
+    });
+
+    await sock.relayMessage(jid, msg.message, { messageId: msg.key.id });
+  };
 
   // substitua o handler atual por este (mais verboso e com reconexão)
   sock.ev.on('connection.update', (update: any) => {
@@ -222,7 +280,7 @@ async function conectarBot(): Promise<void> {
     const listResp = msg.message?.listResponseMessage;
     if (listResp) {
       const selectedId = listResp.singleSelectReply?.selectedRowId;
-      const selectedTitle = (listResp.title || '').toLowerCase();
+      const selectedTitle = ((listResp.title || '') + ' ' + (listResp.description || '')).toLowerCase();
 
       const allowed = pendingPelada.get(remoteJid);
       if (!allowed || !allowed.has(senderJid)) {
@@ -246,29 +304,75 @@ async function conectarBot(): Promise<void> {
       return;
     }
 
+    // tratar selecao em native flow (single_select)
+    const nativeFlowResp = msg.message?.interactiveResponseMessage?.nativeFlowResponseMessage;
+    if (nativeFlowResp) {
+      const paramsJson = nativeFlowResp.paramsJson || '';
+      let selectedId = '';
+
+      try {
+        const payload = JSON.parse(paramsJson);
+        selectedId =
+          payload?.id ||
+          payload?.selected_id ||
+          payload?.selectedId ||
+          payload?.rowId ||
+          payload?.response_json?.id ||
+          '';
+      } catch {
+        const m = paramsJson.match(/pelada_(add|remove|show|guest)/);
+        selectedId = m ? m[0] : '';
+      }
+
+      const allowed = pendingPelada.get(remoteJid);
+      if (!allowed || !allowed.has(senderJid)) {
+        await sock.sendMessage(remoteJid, { text: 'Para confirmar, primeiro digite "pelada".' });
+        return;
+      }
+
+      allowed.delete(senderJid);
+      if (allowed.size === 0) pendingPelada.delete(remoteJid);
+
+      if (selectedId === 'pelada_add') {
+        await runPeladaAction('pelada_add');
+      } else if (selectedId === 'pelada_remove') {
+        await runPeladaAction('pelada_remove');
+      } else if (selectedId === 'pelada_show') {
+        await runPeladaAction('pelada_show');
+      } else if (selectedId === 'pelada_guest') {
+        await runPeladaAction('pelada_guest');
+      }
+      return;
+    }
+
     const texto: string = rawText.toLowerCase();
     const participante: string = msg.pushName || 'Sem Nome';
 
     // quando alguem digita "pelada" envia menu de acoes clicaveis
     if (texto === 'pelada') {
       allowPeladaConfirmation(remoteJid, senderJid);
-      await sock.sendMessage(remoteJid, {
-        text: `⚽ Pelada ${DATA_PELADA}`,
-        footer: 'Clique em uma opcao:',
-        buttons: [
-          { buttonId: 'pelada_add', buttonText: { displayText: '✅ Colocar meu nome na lista' }, type: 1 },
-          { buttonId: 'pelada_remove', buttonText: { displayText: '❌ Retirar meu nome da lista' }, type: 1 },
-          { buttonId: 'pelada_show', buttonText: { displayText: '📋 Exibir a lista da pelada' }, type: 1 }
-        ]
-      });
+      try {
+        await sendPeladaListMenu(remoteJid);
+      } catch (e) {
+        logger.warn({ e }, 'Falha ao enviar menu native flow. Enviando botoes simples como fallback.');
+        await sock.sendMessage(remoteJid, {
+          text: `⚽ Pelada ${DATA_PELADA}`,
+          footer: 'Clique em uma opcao:',
+          buttons: [
+            { buttonId: 'pelada_add', buttonText: { displayText: '✅ Colocar meu nome na lista' }, type: 1 },
+            { buttonId: 'pelada_remove', buttonText: { displayText: '❌ Retirar meu nome da lista' }, type: 1 },
+            { buttonId: 'pelada_show', buttonText: { displayText: '📋 Exibir a lista da pelada' }, type: 1 }
+          ]
+        });
 
-      await sock.sendMessage(remoteJid, {
-        text: 'Mais opcoes:',
-        footer: 'Clique em uma opcao:',
-        buttons: [
-          { buttonId: 'pelada_guest', buttonText: { displayText: '👤 Incluir convidado' }, type: 1 }
-        ]
-      });
+        await sock.sendMessage(remoteJid, {
+          text: 'Mais opcoes:',
+          footer: 'Clique em uma opcao:',
+          buttons: [
+            { buttonId: 'pelada_guest', buttonText: { displayText: '👤 Incluir convidado' }, type: 1 }
+          ]
+        });
+      }
 
       await sock.sendMessage(remoteJid, {
         text:
@@ -665,8 +769,7 @@ function getNextFriday(): string {
   const day = today.getDay(); // 0=Sun ... 5=Fri, 6=Sat
   const target = 5; // Friday
   let diff = (target - day + 7) % 7;
-  // garante que seja sempre no futuro (próxima sexta)
-  if (diff === 0) diff = 7;
+  // se hoje for sexta, mantém hoje; senão, usa a próxima sexta
   const next = new Date(today);
   next.setDate(today.getDate() + diff);
   const d = pad(next.getDate());
@@ -686,7 +789,8 @@ const DATA_PELADA = getNextFriday();
       useMultiFileAuthState,
       DisconnectReason,
       fetchLatestBaileysVersion,
-      Browsers
+      Browsers,
+      generateWAMessageFromContent
     } = baileys as any);
     await conectarBot();
     console.log('Bot iniciado');
