@@ -126,7 +126,8 @@ async function conectarBot(): Promise<void> {
     logger,
     printQRInTerminal: false,
     version,
-    browser: Browsers?.macOS ? Browsers.macOS('Desktop') : ['Pelada Bot', 'Desktop', '1.0.0'],
+    // alguns ambientes rejeitam assinatura Desktop/macOS; Chrome em Linux costuma ser mais estavel
+    browser: Browsers?.ubuntu ? Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '120.0.0.0'],
     connectTimeoutMs: 60_000,
     defaultQueryTimeoutMs: 60_000,
     keepAliveIntervalMs: 10_000,
