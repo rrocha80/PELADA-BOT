@@ -22,7 +22,12 @@ const pendingDeleteSingle = new Map<string, { requesterJid: string; requesterNam
 const pendingDeleteSingleMensalista = new Map<string, { requesterJid: string; requesterName: string }>();
 // controla quem pode clicar no menu logo apos pedir "pelada"
 const pendingPelada = new Map<string, Set<string>>(); // remoteJid -> set(senderJid)
+// controla quem recebeu a pergunta do churrasco e ainda precisa responder quantidade
+const pendingChurrasco = new Map<string, Set<string>>(); // remoteJid -> set(senderJid)
+// lista de churrasco por grupo e por usuario (senderJid -> nome/qtd)
+const churrascoByGroup = new Map<string, Map<string, { nome: string; qtd: number }>>();
 let reconnectAttempts = 0;
+const CHURRASCO_TITULO = 'Churrasco - 24/07/2026';
 
 function allowPeladaConfirmation(remoteJid: string, senderJid: string, ttlMs = 2 * 60 * 1000) {
   let set = pendingPelada.get(remoteJid);
@@ -35,6 +40,66 @@ function allowPeladaConfirmation(remoteJid: string, senderJid: string, ttlMs = 2
     set!.delete(senderJid);
     if (set!.size === 0) pendingPelada.delete(remoteJid);
   }, ttlMs);
+}
+
+function allowChurrascoQuantity(remoteJid: string, senderJid: string, ttlMs = 5 * 60 * 1000) {
+  let set = pendingChurrasco.get(remoteJid);
+  if (!set) {
+    set = new Set<string>();
+    pendingChurrasco.set(remoteJid, set);
+  }
+  set.add(senderJid);
+  setTimeout(() => {
+    set!.delete(senderJid);
+    if (set!.size === 0) pendingChurrasco.delete(remoteJid);
+  }, ttlMs);
+}
+
+function upsertChurrasco(remoteJid: string, senderJid: string, nome: string, qtd: number) {
+  let groupList = churrascoByGroup.get(remoteJid);
+  if (!groupList) {
+    groupList = new Map<string, { nome: string; qtd: number }>();
+    churrascoByGroup.set(remoteJid, groupList);
+  }
+
+  // evita duplicidade por nome no mesmo grupo; se repetir, atualiza a quantidade
+  const nomeNormalizado = nome.trim().toLowerCase();
+  for (const [existingJid, existing] of groupList.entries()) {
+    if (existingJid !== senderJid && existing.nome.trim().toLowerCase() === nomeNormalizado) {
+      groupList.delete(existingJid);
+    }
+  }
+
+  groupList.set(senderJid, { nome, qtd });
+}
+
+function formatarListaChurrasco(remoteJid: string): string {
+  const groupList = churrascoByGroup.get(remoteJid);
+  let texto = `${CHURRASCO_TITULO}\n\n`;
+
+  if (!groupList || groupList.size === 0) {
+    texto += 'Nenhuma resposta registrada.';
+    return texto;
+  }
+
+  const entries = Array.from(groupList.values());
+  entries.forEach((item, i) => {
+    texto += `${i + 1}- ${item.nome} (${item.qtd})\n`;
+  });
+
+  return texto.trim();
+}
+
+function removerDoChurrasco(remoteJid: string, senderJid: string): boolean {
+  const groupList = churrascoByGroup.get(remoteJid);
+  if (!groupList) return false;
+
+  const removed = groupList.delete(senderJid);
+  if (groupList.size === 0) {
+    churrascoByGroup.delete(remoteJid);
+  }
+
+  return removed;
 }
 
 async function conectarBot(): Promise<void> {
@@ -392,6 +457,44 @@ async function conectarBot(): Promise<void> {
 
     const texto: string = rawText.toLowerCase();
     const participante: string = msg.pushName || 'Sem Nome';
+
+    if (texto === 'churrasco') {
+      allowChurrascoQuantity(remoteJid, senderJid);
+      await sock.sendMessage(remoteJid, { text: 'Quantos convidados voce vai levar?' });
+      return;
+    }
+
+    if (texto === 'sair churrasco') {
+      const removed = removerDoChurrasco(remoteJid, senderJid);
+      if (!removed) {
+        await sock.sendMessage(remoteJid, { text: 'Voce nao esta na lista do churrasco.' });
+        return;
+      }
+
+      await sock.sendMessage(remoteJid, { text: formatarListaChurrasco(remoteJid) });
+      return;
+    }
+
+    if (texto === 'listar churrasco') {
+      await sock.sendMessage(remoteJid, { text: formatarListaChurrasco(remoteJid) });
+      return;
+    }
+
+    const allowedChurrasco = pendingChurrasco.get(remoteJid);
+    if (allowedChurrasco && allowedChurrasco.has(senderJid)) {
+      const qtd = Number.parseInt(rawText.trim(), 10);
+      if (!Number.isFinite(qtd) || qtd < 0) {
+        await sock.sendMessage(remoteJid, { text: 'Resposta invalida. Digite apenas um numero de convidados (ex.: 3).' });
+        return;
+      }
+
+      allowedChurrasco.delete(senderJid);
+      if (allowedChurrasco.size === 0) pendingChurrasco.delete(remoteJid);
+
+      upsertChurrasco(remoteJid, senderJid, participante, qtd);
+      await sock.sendMessage(remoteJid, { text: formatarListaChurrasco(remoteJid) });
+      return;
+    }
 
     // quando alguem digita "pelada" envia menu de acoes clicaveis
     if (texto === 'pelada') {
