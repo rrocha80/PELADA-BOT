@@ -27,7 +27,7 @@ const pendingChurrasco = new Map<string, Set<string>>(); // remoteJid -> set(sen
 // lista de churrasco por grupo e por usuario (senderJid -> nome/qtd)
 const churrascoByGroup = new Map<string, Map<string, { nome: string; qtd: number }>>();
 let reconnectAttempts = 0;
-const CHURRASCO_TITULO = 'Churrasco - 24/07/2026';
+const CHURRASCO_TITULO  = 'Churrasco - 24/07/2026';
 
 function allowPeladaConfirmation(remoteJid: string, senderJid: string, ttlMs = 2 * 60 * 1000) {
   let set = pendingPelada.get(remoteJid);
