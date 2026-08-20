@@ -526,8 +526,8 @@ async function conectarBot(): Promise<void> {
       await sock.sendMessage(remoteJid, {
         text:
           'Se os botoes nao aparecerem no seu WhatsApp, responda com:\n' +
-          '1 - Colocar meu nome na lista\n' +
-          '2 - Retirar meu nome da lista\n' +
+          '1 - /sim\n' +
+          '2 - /não\n' +
           '3 - Exibir a lista da pelada\n' +
           '4 - Incluir convidado'
       });
@@ -602,14 +602,14 @@ async function conectarBot(): Promise<void> {
     }
     // se existir pending mas quem respondeu não é o convidador, ignore o pending e prossiga normalmente
 
-    if (['sim','s','bora','dentro'].includes(texto)) {
+    if (['/sim','s','bora','dentro'].includes(texto)) {
       adicionarParticipante(participante, async () => {
         const lista = await obterLista();
         await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
       });
     }
 
-    if (['nao','não','n','fora'].includes(texto)) {
+    if (['/não','n','fora'].includes(texto)) {
       removerParticipante(participante, async () => {
         const lista = await obterLista();
         await sock.sendMessage(remoteJid, { text: formatarLista(lista) });
